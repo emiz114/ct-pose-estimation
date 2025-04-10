@@ -1,0 +1,14 @@
+# macOS system files
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Images and temporary files
+*.png
+tmp*/
+
+# Local folders not to push
+pose-est/
+
