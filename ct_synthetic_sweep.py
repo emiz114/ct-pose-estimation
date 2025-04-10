@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 import vtk
 from vtk.util import numpy_support
 
-########## LOAD REFERENCE IMAGE ##########
+#################### LOAD REFERENCE IMAGE ####################
+
 path = "/Users/emiz/Desktop/img3d_CT_bav75_preop"
 img = sitk.ReadImage(path + ".nii.gz")
 
@@ -21,9 +22,66 @@ img_array = sitk.GetArrayFromImage(ref_img)
 # save as new nifti image
 sitk.WriteImage(ref_img, path + "_ref.nii.gz")
 
-########## GENERATE IMAGE SWEEPS ##########
+# coronal slice: 
+coronal = 282
 
-cor = [0, 0, 0]
+#################### SELECT LANDMARKS ####################
+
+landmarks = []
+
+def select_landmark(event): 
+    """
+    
+    """
+
+    global coronal
+
+    if event.inaxes == ax:
+        x, y = event.xdata, event.ydata
+
+    # update title
+    if len(landmarks) == 0: 
+        ax.set_title(f"Coronal Slice {coronal}: Landmark - (LEFT)")
+    if len(landmarks) == 1:
+        ax.set_title(f"Coronal Slice {coronal}: Landmark - (RIGHT)")
+    if len(landmarks) == 2: 
+        ax.set_title(f"Coronal Slice {coronal}: Landmark - (TOP)")
+    
+    if x is not None and y is not None and len(landmarks) < 4:
+        z_index = coronal - 1  # The coronal slice corresponds to a fixed Z index
+        y_index = int(y)  # Y index corresponds to the vertical direction in the 2D slice
+        x_index = int(x)  # X index corresponds to the horizontal direction in the 2D slice
+        print(f"Selected landmark at (img_array Z, Y, X): ({z_index}, {y_index}, {x_index})")
+        landmarks.append((z_index, y_index, x_index))
+        ax.plot(x, y, 'ro')  # Mark the landmark with a red dot
+        fig.canvas.draw()
+    
+    if len(landmarks) == 4:
+        ax.set_title("4 Landmarks Selected — Closing...")
+        fig.canvas.draw()
+        fig.canvas.flush_events()  # Ensure everything is rendered
+        plt.close(fig)
+        
+coronal_slice = np.fliplr(img_array[:, coronal-1, :])  # Coronal: Front view (Y slice)
+
+# Create a figure to display the coronal slice
+fig, ax = plt.subplots(figsize=(8, 8))
+
+# Plot the coronal slice
+ax.imshow(coronal_slice, cmap="gray")
+ax.set_title(f"Coronal Slice {coronal}: Landmark - APEX")
+ax.axis("off")
+
+# Connect the on_click function to the figure
+fig.canvas.mpl_connect('button_press_event', select_landmark)
+
+# Show the figure and wait for user input (clicking on the coronal slice)
+plt.show()
+
+#################### GENERATE IMAGE SWEEPS ####################
+
+cor = landmarks[0]
+print(cor)
 tform = sitk.Euler3DTransform()
 tform.SetCenter(cor)
 tform.SetRotation(0, 0, np.deg2rad(15))
@@ -31,7 +89,8 @@ tform.SetRotation(0, 0, np.deg2rad(15))
 resampled_img = sitk.Resample(ref_img, ref_img, tform, sitk.sitkLinear, 0.0, ref_img.GetPixelID())
 sitk.WriteImage(resampled_img, path + "_test.nii.gz")
 
-########## CROP IMAGE ##########
+#################### CROP IMAGE ####################
+
 def crop_cube(img_array):
     """
     Crops image into a cube based on the minimum slice dimension. 
@@ -49,7 +108,7 @@ def crop_cube(img_array):
 
 img_array_crop = crop_cube(img_array)
 
-# ######### TESTING ##########
+################### TESTING ####################
 axial = 173
 sagittal = 299
 coronal = 282
@@ -78,77 +137,4 @@ axes[2].set_title(f"Coronal Slice {coronal}")
 axes[2].axis("off")
 
 # Show all views
-plt.show()
-
-
-# def show_ct_3d_vtk(img_array, img_array_crop):
-#     # Convert the numpy arrays to VTK format
-#     def create_vtk_volume(img_array, color='white', opacity='sigmoid'):
-#         data = vtk.vtkImageData()
-#         data.SetDimensions(img_array.shape[2], img_array.shape[1], img_array.shape[0])
-
-#         # Flatten the image array and convert it to a VTK array
-#         flat_array = img_array.flatten(order="F")  # Flatten in Fortran order
-#         vtk_array = vtk.util.numpy_support.numpy_to_vtk(flat_array, deep=True, array_type=vtk.VTK_FLOAT)
-
-#         # Set the point data for the VTK image
-#         data.GetPointData().SetScalars(vtk_array)
-
-#         # Set the spacing (for example, 1x1x1, adjust as needed)
-#         data.SetSpacing(1.0, 1.0, 1.0)
-
-#         # Create a volume mapper and volume
-#         volume_mapper = vtk.vtkGPUVolumeRayCastMapper()
-#         volume_mapper.SetInputData(data)
-
-#         # Set up the volume properties (e.g., color and opacity)
-#         volume_property = vtk.vtkVolumeProperty()
-
-#         # Color transfer function
-#         color_func = vtk.vtkColorTransferFunction()
-#         if color == 'red':
-#             color_func.AddRGBPoint(0, 1.0, 0.0, 0.0)  # Red for low values
-#             color_func.AddRGBPoint(255, 1.0, 0.0, 0.0)  # Red for high values
-#         else:
-#             color_func.AddRGBPoint(0, 0.0, 0.0, 0.0)  # Black for low values
-#             color_func.AddRGBPoint(255, 1.0, 1.0, 1.0)  # White for high values
-
-#         # Opacity transfer function
-#         opacity_func = vtk.vtkPiecewiseFunction()
-#         opacity_func.AddPoint(0, 0.0)  # Transparent for low values
-#         opacity_func.AddPoint(255, 1.0)  # Opaque for high values
-
-#         volume_property.SetColor(color_func)
-#         volume_property.SetScalarOpacity(opacity_func)
-
-#         # Create the volume
-#         volume = vtk.vtkVolume()
-#         volume.SetMapper(volume_mapper)
-#         volume.SetProperty(volume_property)
-#         return volume
-
-#     # Create two volumes with different properties
-#     volume1 = create_vtk_volume(img_array, color='white', opacity='sigmoid')  # Transparent for original
-#     volume2 = create_vtk_volume(img_array_crop, color='red', opacity='sigmoid')  # Red for cropped
-
-#     # Set up the renderer, render window, and interactor
-#     renderer = vtk.vtkRenderer()
-#     render_window = vtk.vtkRenderWindow()
-#     render_window.AddRenderer(renderer)
-
-#     render_window_interactor = vtk.vtkRenderWindowInteractor()
-#     render_window_interactor.SetRenderWindow(render_window)
-
-#     # Add volumes to renderer
-#     renderer.AddVolume(volume1)
-#     renderer.AddVolume(volume2)
-
-#     # Set background color
-#     renderer.SetBackground(0.1, 0.2, 0.4)
-
-#     # Start rendering
-#     render_window.Render()
-#     render_window_interactor.Start()
-
-# # Assuming img_array and img_array_crop are your loaded CT scan volumes
-# show_ct_3d_vtk(img_array, img_array_crop)
+#plt.show()
