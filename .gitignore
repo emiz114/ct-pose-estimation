@@ -7,8 +7,7 @@ __pycache__/
 
 # Images and temporary files
 *.png
+*.PNG
 tmp*/
 
-# Local folders not to push
-pose-est/
 
