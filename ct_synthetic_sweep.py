@@ -5,7 +5,7 @@ import numpy as np
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
 import vtk
-from vtk.util import numpy_support
+from matplotlib.path import Path
 
 #################### LOAD REFERENCE IMAGE ####################
 
@@ -28,12 +28,12 @@ coronal = 282
 #################### SELECT LANDMARKS ####################
 
 landmarks = []
+landmarks2D = []
 
 def select_landmark(event): 
     """
     
     """
-
     global coronal
 
     if event.inaxes == ax:
@@ -41,13 +41,14 @@ def select_landmark(event):
 
     # update title
     if len(landmarks) == 0: 
-        ax.set_title(f"Coronal Slice {coronal}: Landmark - (LEFT)")
+        ax.set_title(f"Coronal Slice {coronal}: Landmark - MITRAL ANNULUS (left)")
     if len(landmarks) == 1:
-        ax.set_title(f"Coronal Slice {coronal}: Landmark - (RIGHT)")
+        ax.set_title(f"Coronal Slice {coronal}: Landmark - TRICUSPID ANNULUS (right)")
     if len(landmarks) == 2: 
-        ax.set_title(f"Coronal Slice {coronal}: Landmark - (TOP)")
+        ax.set_title(f"Coronal Slice {coronal}: Landmark - BASE")
     
     if x is not None and y is not None and len(landmarks) < 4:
+        landmarks2D.append((x, y))
         z_index = coronal - 1  # The coronal slice corresponds to a fixed Z index
         y_index = int(y)  # Y index corresponds to the vertical direction in the 2D slice
         x_index = int(x)  # X index corresponds to the horizontal direction in the 2D slice
@@ -62,6 +63,7 @@ def select_landmark(event):
         fig.canvas.flush_events()  # Ensure everything is rendered
         plt.close(fig)
         
+#coronal_slice = np.fliplr(img_array[:, coronal-1, :])  # Coronal: Front view (Y slice)
 coronal_slice = np.fliplr(img_array[:, coronal-1, :])  # Coronal: Front view (Y slice)
 
 # Create a figure to display the coronal slice
@@ -78,35 +80,67 @@ fig.canvas.mpl_connect('button_press_event', select_landmark)
 # Show the figure and wait for user input (clicking on the coronal slice)
 plt.show()
 
-#################### GENERATE IMAGE SWEEPS ####################
-
-cor = landmarks[0]
-print(cor)
-tform = sitk.Euler3DTransform()
-tform.SetCenter(cor)
-tform.SetRotation(0, 0, np.deg2rad(15))
-
-resampled_img = sitk.Resample(ref_img, ref_img, tform, sitk.sitkLinear, 0.0, ref_img.GetPixelID())
-sitk.WriteImage(resampled_img, path + "_test.nii.gz")
-
 #################### CROP IMAGE ####################
 
-def crop_cube(img_array):
+def crop_cone(shape, landmarks2D, angle_range=(0, np.pi/2)):
     """
-    Crops image into a cube based on the minimum slice dimension. 
+    Create a quarter-circle cone mask from apex with radius to base.
+    - shape: (height, width) of the image
+    - landmarks2D: list of 2D landmarks [(x, y), ...] where
+        [0] = apex
+        [3] = base
+    - angle_range: tuple of angles (theta_min, theta_max) in radians
     """
-    z, y, x = img_array.shape
-    min_dim = min(z, y, x)
+    apex = np.array(landmarks2D[0])
+    base = np.array(landmarks2D[3])
     
-    z_start = (z - min_dim) // 2
-    y_start = (y - min_dim) // 2
-    x_start = (x - min_dim) // 2
+    radius = np.linalg.norm(base - apex)
 
-    return img_array[z_start:z_start+min_dim,
-                     y_start:y_start+min_dim,
-                     x_start:x_start+min_dim]
+    Y, X = shape
+    yy, xx = np.mgrid[0:Y, 0:X]
 
-img_array_crop = crop_cube(img_array)
+    dx = xx - apex[0]
+    dy = yy - apex[1]
+
+    dist = np.sqrt(dx**2 + dy**2)
+    theta = (np.arctan2(dy, dx) + 2 * np.pi) % (2 * np.pi)
+
+    tmin = (angle_range[0] + 2 * np.pi) % (2 * np.pi)
+    tmax = (angle_range[1] + 2 * np.pi) % (2 * np.pi)
+
+    mask = (dist <= radius) & (theta >= tmin) & (theta <= tmax)
+    return mask
+
+# Generate quarter cone mask (adjust angle range if needed)
+cone_mask = crop_cone(coronal_slice.shape, landmarks2D, angle_range=(0, np.pi/2))
+
+# Apply to image
+masked_slice = np.where(cone_mask, coronal_slice, 0)
+
+# Visualize
+plt.figure(figsize=(8, 8))
+plt.imshow(masked_slice, cmap='gray')
+plt.title("Quarter Cone Crop from Apex to Base")
+plt.axis("off")
+plt.show()
+
+#################### GENERATE IMAGE SWEEPS ####################
+
+apex = landmarks[0]
+mitral = landmarks[1]
+tricuspid = landmarks[2]
+base = landmarks[3]
+
+def apply_tform(ref_img, angle):
+    """
+    Applies a rotation onto the reference image.
+    """
+    tform = sitk.Euler3DTransform()
+    tform.SetCenter(apex)
+    tform.SetRotation(0, 0, np.deg2rad(15))
+
+    resampled_img = sitk.Resample(ref_img, ref_img, tform, sitk.sitkLinear, 0.0, ref_img.GetPixelID())
+    sitk.WriteImage(resampled_img, path + "_test.nii.gz")
 
 ################### TESTING ####################
 axial = 173
