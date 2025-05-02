@@ -1,6 +1,7 @@
 # CT SYNTHETIC SWEEP IMAGE GENERATION
 # created 04022025
 
+import os
 import numpy as np
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
@@ -8,21 +9,83 @@ from scipy.spatial.transform import Rotation as R
 
 #################### LOAD REFERENCE IMAGE ####################
 
-path = "/Users/emiz/Desktop/img3d_CT_bav75_preop"
-img = sitk.ReadImage(path + ".nii.gz")
+# Ask user for folder name
+folder_path = "/Users/emiz/Desktop/"  # <- EDIT HERE 
+data = input("\nInput Folder Name: ")
 
+# Build full path to input file
+input_4d_path = os.path.join(folder_path, data, f"{data}.nii.gz")
+output_3d_path = os.path.join(folder_path, data, f"{data}_3D.nii.gz")
+
+# Save the 3D image
+if not os.path.exists(output_3d_path):
+    # Read 4D image
+    img4d = sitk.ReadImage(input_4d_path)
+
+    # Check if it's really 4D
+    if img4d.GetDimension() != 4:
+        raise ValueError(f"Expected a 4D image, but got {img4d.GetDimension()}D")
+
+    # Extract first timepoint (t=0)
+    img = img4d[:, :, :, 0]
+    sitk.WriteImage(img, output_3d_path)
+    print(f"\nSaved first timepoint to: {output_3d_path}")
+else:
+    print(f"\nSkipped writing: {output_3d_path} already exists.")
+
+img = sitk.ReadImage(output_3d_path)
 # load tform
-ref_tform = sitk.ReadTransform(path + "_tform.txt")
+ref_tform = sitk.ReadTransform(folder_path + data + "/" + data + "_tform.txt")
+
+def expand_bb(img, tform):
+    dim = img.GetDimension()
+    img_size = img.GetSize()
+    img_spacing = img.GetSpacing()
+    img_origin = img.GetOrigin()
+    img_direction = np.array(img.GetDirection()).reshape((dim, dim))
+
+    # get corner points
+    corners = []
+    for i in range(2**dim):
+        idx = [(i >> d) & 1 for d in range(dim)]
+        physical = img_origin + img_direction @ (np.array(idx) * img_spacing * np.array(img_size))
+        corners.append(physical)
+    corners = np.array(corners)
+
+    # Transform corners
+    transformed_corners = np.array([tform.TransformPoint(p.tolist()) for p in corners])
+
+    # Find bounding box
+    min_corner = transformed_corners.min(axis=0)
+    max_corner = transformed_corners.max(axis=0)
+
+    # Compute new size
+    new_origin = min_corner
+    new_size = np.ceil((max_corner - min_corner) / img_spacing).astype(int).tolist()
+
+    return new_size, new_origin
+
+new_size, new_origin = expand_bb(img, ref_tform)
 
 # apply tform to get reference image/pose
-ref_img = sitk.Resample(img, transform=ref_tform)
+ref_img = sitk.Resample(
+    img, 
+    size=new_size, 
+    transform=ref_tform,
+    outputSpacing=img.GetSpacing(),
+    outputOrigin=img.GetOrigin(),
+    outputDirection=img.GetDirection(),
+    defaultPixelValue=0,
+    interpolator=sitk.sitkLinear
+)
 img_array = sitk.GetArrayFromImage(ref_img)
 
 # save as new nifti image
-sitk.WriteImage(ref_img, path + "_ref.nii.gz")
+sitk.WriteImage(ref_img, folder_path + data + "/" + data + "_ref.nii.gz")
 
 # coronal slice: 
-coronal = 282
+coronal = int(input("\nA4CH Coronal Slice: "))
+print("\n")
 
 #################### SELECT LANDMARKS ####################
 
@@ -33,8 +96,6 @@ def select_landmark(event):
     """
     Allows user to select necessary landmarks. 
     """
-    global coronal
-
     if event.inaxes == ax:
         x, y = event.xdata, event.ydata
 
@@ -73,6 +134,20 @@ ax.axis("off")
 # connect the on_click function to the figure
 fig.canvas.mpl_connect('button_press_event', select_landmark)
 plt.show()
+
+#################### SAVE LANDMARKS TO TXT ####################
+
+landmark_file = os.path.join(folder_path, data, f"{data}_landmarks.txt")
+with open(landmark_file, 'w') as f:
+    f.write("3D Landmarks (Z, Y, X):\n")
+    for pt in landmarks:
+        f.write(f"{pt[0]}, {pt[1]}, {pt[2]}\n")
+    
+    f.write("\n2D Landmarks (X, Y) in coronal slice:\n")
+    for pt in landmarks2D:
+        f.write(f"{pt[0]:.2f}, {pt[1]:.2f}\n")
+
+print(f"\nSaved landmark coordinates to {landmark_file}")
 
 #################### CROP IMAGE ####################
 
@@ -122,171 +197,157 @@ def crop_cone(shape, landmarks2D, angle_span=np.pi/2):
     
     return mask, radius
 
-# Generate quarter cone mask (adjust angle range if needed)
+# generate quarter cone mask (adjust angle range if needed)
 cone_mask, radius = crop_cone(coronal_slice.shape, landmarks2D)
 
-# Apply to image
+# apply to image
 masked_slice = np.where(cone_mask, coronal_slice, 0)
 
-# Visualize
-plt.figure(figsize=(8, 8))
-plt.imshow(masked_slice, cmap='gray')
-plt.title("Quarter Cone Crop from Apex to Base")
-plt.axis("off")
-plt.show()
+# visualize
+# plt.figure(figsize=(8, 8))
+# plt.imshow(masked_slice, cmap='gray')
+# plt.title("Quarter Cone Crop from Apex to Base")
+# plt.axis("off")
+#plt.show()
 
 #################### GENERATE IMAGE SWEEPS ####################
 
-def apply_tform(ref_img, landmarks, angle):
+def apply_tform_ab(ref_img, landmarks, angle):
     """
-    Applies a rotation to ref_img around the axis defined by apex → base.
+    Applies a rotation to ref_img around the axis defined by apex -> base.
     """
-    angle_radians = np.deg2rad(angle)
-    
-    # Convert apex and base to numpy arrays
+    angle = np.deg2rad(angle)    
+    # get apex landmark
     apex = np.array(landmarks[0], dtype=float)
-    base = np.array(landmarks[3], dtype=float)
-
-    # Convert to physical space
     apex_phys = np.array(ref_img.TransformIndexToPhysicalPoint([int(x) for x in apex[::-1]]))
-    base_phys = np.array(ref_img.TransformIndexToPhysicalPoint([int(x) for x in base[::-1]]))
 
-    # Axis of rotation (unit vector)
-    axis = base_phys - apex_phys
-    axis /= np.linalg.norm(axis)
+    # set up Euler 3D transform
+    euler = sitk.Euler3DTransform()
+    euler.SetCenter(apex_phys.tolist())
 
-    # Set up versor transform
-    versor = sitk.VersorRigid3DTransform()
-    versor.SetCenter(apex_phys.tolist())
-    versor.SetRotation(axis.tolist(), angle_radians)
-    versor.SetTranslation([0.0, 0.0, 0.0])
+    # rotate about vertical axis (Z-axis)
+    euler.SetRotation(
+        0.0,            # rotation around x-axis (pitch)
+        0.0,            # rotation around y-axis (roll)
+        angle           # rotation around z-axis (yaw) — vertical
+    )
+    euler.SetTranslation([0.0, 0.0, 0.0])
 
-    # Apply transform
+    # apply transform
     resampled_img = sitk.Resample(
-        ref_img, ref_img, versor, sitk.sitkLinear, 0.0, ref_img.GetPixelID()
+        ref_img, ref_img, euler, sitk.sitkLinear, 0.0, ref_img.GetPixelID()
     )
 
     return resampled_img
 
-######### TESTING ##########
+def apply_tform_mt(ref_img, landmarks, angle):
+    """
+    Applies a rotation to ref_img around the direction defined by mitral -> tricuspid annulus from apex. 
+    """
+    angle = np.deg2rad(angle)
+    # get apex landmark
+    apex = np.array(landmarks[0], dtype=float)
+    apex_phys = np.array(ref_img.TransformIndexToPhysicalPoint([int(x) for x in apex[::-1]]))
 
-# List of angles to loop through
-angles = range(0, 46, 5)  # From 0 to 45 degrees, with a step of 5
+    # set up Euler 3D transform
+    euler = sitk.Euler3DTransform()
+    euler.SetCenter(apex_phys.tolist())
 
-# Calculate the number of rows and columns for the grid
-n_plots = len(angles)
-n_cols = 5  # You can adjust this to change the number of columns
-n_rows = (n_plots + n_cols - 1) // n_cols  # Round up to fill rows
+    # rotate about horizontal axis (X-axis)
+    euler.SetRotation(
+        angle,         # rotation around x-axis (pitch) - horizontal
+        0.0,           # rotation around y-axis (roll)
+        0.0            # rotation around z-axis (yaw)
+    )
+    euler.SetTranslation([0.0, 0.0, 0.0])
 
-# Create a figure with a grid of subplots
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 8))
+    # apply transform
+    resampled_img = sitk.Resample(
+        ref_img, ref_img, euler, sitk.sitkLinear, 0.0, ref_img.GetPixelID()
+    )
 
-# Flatten the axes array for easy iteration
-axes = axes.flatten()
+    return resampled_img
 
-# Loop through the angles
-for i, angle in enumerate(angles):
-    # Apply transform to image at the current angle
-    rotated_img = apply_tform(ref_img, landmarks, -angle)  # Negative for counterclockwise rotation
-    sitk.WriteImage(rotated_img, f"/Users/emiz/Desktop/trial_{angle}.nii.gz")
-    
-    # Convert to NumPy and extract coronal slice
-    rotated_array = sitk.GetArrayFromImage(rotated_img)
-    coronal_slice_ = np.fliplr(rotated_array[:, coronal-1, :])
-    
-    # Plot the rotated slice in the current subplot
-    axes[i].imshow(coronal_slice_, cmap='gray')
-    axes[i].set_title(f"Rotated {angle}°")
-    axes[i].axis("off")
+########## GENERATE AXIS-BASE SWEEPS ##########
 
-# Remove empty subplots if the number of angles is less than the grid size
-for j in range(i + 1, len(axes)):
-    axes[j].axis('off')
+def save_rotated_slices(ref_img, landmarks, cone_mask, angles, rot, save_dir):
 
-# Display the plot
-plt.tight_layout()
-plt.show()
+    os.makedirs(save_dir, exist_ok=True)
 
+    for _, angle in enumerate(angles):
 
-# angles = range(-10, 10, 1)  # from -90 to 90 degrees inclusive
-# sweep_images = []  # to store resampled images
-# coronal_slices = []  # to store 2D coronal slices at apex-base level
-# cropped_slices = []
+        # apply transform to image at the current angle
+        if rot == 'ab':
+            rotated_img = apply_tform_ab(ref_img, landmarks, -angle)
+        if rot == 'mt': 
+            rotated_img = apply_tform_mt(ref_img, landmarks, -angle)
 
-# # Determine coronal slice index based on apex and base landmarks
-# # Since coronal slices are along the YZ plane, use the X index
-# apex_z, apex_y, apex_x = landmarks[0]
-# base_z, base_y, base_x = landmarks[3]
-# coronal_index = int((apex_z + base_z) / 2)
+        rotated_array = sitk.GetArrayFromImage(rotated_img)
+        coronal_slice = np.fliplr(rotated_array[:, coronal - 1, :])
+        masked_slice = np.where(cone_mask, coronal_slice, 0)
 
-# print(f"Using coronal slice Z index (slice axis): {coronal_index}")
+        fig, ax = plt.subplots(figsize=(4, 4))
+        ax.imshow(np.flipud(masked_slice), cmap='gray', origin='lower')
+        ax.set_title(f"Rotated {angle}°")
+        ax.axis("off")
 
-# for angle in angles:
-#     print(f"Applying rotation: {angle} degrees")
+        # save the figure
+        file_path = os.path.join(save_dir, f"rotated_{angle:+03}.png")
+        plt.savefig(file_path, bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
 
-#     # Rotate image
-#     rotated_img = apply_tform(ref_img, landmarks, angle)
-#     sweep_images.append(rotated_img)
+    print(f"Saved {len(angles)} images to '{save_dir}'")
 
-#     # Extract and flip coronal slice
-#     array = sitk.GetArrayFromImage(rotated_img)
-#     coronal_slice = np.fliplr(array[:, coronal_index, :])  # coronal = Z fixed, axis (Y,X)
-#     coronal_slices.append(coronal_slice)
+# generate apex-base sweeps -90 to +90 degrees
+# angles = range(-90, 91, 5)
+# output_path = folder_path + data + "/" + data + "/apex-base-rotation"
+# save_rotated_slices(ref_img, landmarks, cone_mask, angles, 'ab', output_path)
 
-#     # Apply cone crop to 2D coronal slice
-#     cone_mask, radius = crop_cone(coronal_slice.shape, landmarks2D)
-#     masked_slice = np.where(cone_mask, coronal_slice, 0)
+# # generate mitral-tricuspid sweeps -15 to +15 degrees
+# angles = range(-15, 16, 1)
+# output_path = folder_path + data + "/" + data + "/mitral-tricuspid-rotation"
+# save_rotated_slices(ref_img, landmarks, cone_mask, angles, 'mt', output_path)
 
-#     cropped_slices.append(masked_slice)
+########## VISUALIZATION FOR TESTING ##########
 
-# # Plot all coronal slices
-# n_cols = 6
-# n_rows = int(np.ceil(len(angles) / n_cols))
+# list of angles to loop through (step of 5)
+# angles = range(-90, 91, 5)
 
-# fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 3 * n_rows))
+# # Calculate the number of rows and columns for the grid
+# n_plots = len(angles)
+# n_cols = 5  # You can adjust this to change the number of columns
+# n_rows = (n_plots + n_cols - 1) // n_cols  # Round up to fill rows
+
+# # Create a figure with a grid of subplots
+# fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 8))
+
+# # Flatten the axes array for easy iteration
 # axes = axes.flatten()
 
-# for i, (angle, slice_img) in enumerate(zip(angles, cropped_slices)):
-#     axes[i].imshow(slice_img, cmap="gray")
-#     axes[i].set_title(f"{angle}°")
+# # Loop through the angles
+# for i, angle in enumerate(angles):
+#     # Apply transform to image at the current angle (negative for counterclockwise)
+#     rotated_img = apply_tform_ab(ref_img, landmarks, -angle)
+    
+#     # Convert to NumPy array
+#     rotated_array = sitk.GetArrayFromImage(rotated_img)
+#     coronal_slice = np.fliplr(rotated_array[:, coronal-1, :])
+#     # Apply cone mask/cropping
+#     masked_slice = np.where(cone_mask, coronal_slice, 0)
+
+#     # Display the coronal slice
+#     axes[i].imshow(np.flipud(coronal_slice), cmap='gray', origin='lower')
+
+#     # Plot the apex point
+#     axes[i].plot(landmarks2D[0][0], coronal_slice.shape[0] - landmarks2D[0][1] -1, 'bo', markersize=5)
+
+#     # Final touches
+#     axes[i].set_title(f"Rotated {angle}°")
 #     axes[i].axis("off")
 
-# # Hide any unused subplots
+# # Turn off any remaining unused subplots
 # for j in range(i + 1, len(axes)):
-#     axes[j].axis("off")
+#     axes[j].axis('off')
 
 # plt.tight_layout()
-# plt.suptitle("Coronal Slices at Apex-Base Plane (Sweep -10° to 10°)", y=1.02, fontsize=16)
 # plt.show()
-
-################### TESTING ####################
-
-axial = 173
-sagittal = 299
-coronal = 282
-
-# Extract slices from (Z, Y, X) format
-axial_slice = np.fliplr(img_array[axial-1, :, :])  # Axial: Top-down (Z slice)
-sagittal_slice = img_array[:, :, sagittal-1]  # Sagittal: Side view (X slice)
-coronal_slice = np.fliplr(img_array[:, coronal-1, :])  # Coronal: Front view (Y slice)
-
-# Create a figure to display all three views
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
-# Plot axial view
-axes[0].imshow(axial_slice, cmap="gray")
-axes[0].set_title(f"Axial Slice {axial}")
-axes[0].axis("off")
-
-# Plot sagittal view
-axes[1].imshow(sagittal_slice, cmap="gray")
-axes[1].set_title(f"Sagittal Slice {sagittal}")
-axes[1].axis("off")
-
-# Plot coronal view
-axes[2].imshow(coronal_slice, cmap="gray")
-axes[2].set_title(f"Coronal Slice {coronal}")
-axes[2].axis("off")
-
-# Show all views
-#plt.show()
