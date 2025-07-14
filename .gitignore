@@ -5,11 +5,22 @@
 __pycache__/
 *.pyc
 
-# Images and temporary files
+# Images, videos and temporary files
 *.png
 *.PNG
+*.mov
 tmp*/
 
 pose-est/
 *.mov
 
+# Compiled Python binaries
+*.so
+*.pyd
+*.pyo
+
+# Jupyter/IPython and R
+.ipynb_checkpoints/
+*.ipynb
+*.Rhistory
+*.RData
