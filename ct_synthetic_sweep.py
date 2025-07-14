@@ -41,6 +41,54 @@ else:
         print(f"\nSkipped writing: {output_3d_path} already exists.")
         img = sitk.ReadImage(output_3d_path)
 
+# input/output paths
+input_path = os.path.join(folder_path, data, f"{data}.nii.gz")
+output_3d_path = os.path.join(folder_path, data, f"{data}_3D.nii.gz")
+
+# 3D image exists
+if image_dim == "3D":
+    img = sitk.ReadImage(input_path)
+
+# 4D image, need to slice
+else: 
+    # already sliced
+    if not os.path.exists(output_3d_path):
+        # Read 4D image
+        img4d = sitk.ReadImage(input_path)
+
+        # Check if it's really 4D
+        if img4d.GetDimension() != 4:
+            raise ValueError(f"Expected a 4D image, but got {img4d.GetDimension()}D")
+
+        # Extract first timepoint (t=0)
+        img = img4d[:, :, :, 0]
+        sitk.WriteImage(img, output_3d_path)
+        print(f"\nSaved first timepoint to: {output_3d_path}")
+    else:
+        print(f"\nSkipped writing: {output_3d_path} already exists.")
+        img = sitk.ReadImage(output_3d_path)
+
+# Build full path to input file
+input_4d_path = os.path.join(folder_path, data, f"{data}.nii.gz")
+output_3d_path = os.path.join(folder_path, data, f"{data}_3D.nii.gz")
+
+# Save the 3D image
+if not os.path.exists(output_3d_path):
+    # Read 4D image
+    img4d = sitk.ReadImage(input_4d_path)
+
+    # Check if it's really 4D
+    if img4d.GetDimension() != 4:
+        raise ValueError(f"Expected a 4D image, but got {img4d.GetDimension()}D")
+
+    # Extract first timepoint (t=0)
+    img = img4d[:, :, :, 0]
+    sitk.WriteImage(img, output_3d_path)
+    print(f"\nSaved first timepoint to: {output_3d_path}")
+else:
+    print(f"\nSkipped writing: {output_3d_path} already exists.")
+
+img = sitk.ReadImage(output_3d_path)
 # load tform
 ref_tform = sitk.ReadTransform(folder_path + data + "/" + data + "_tform.txt")
 
