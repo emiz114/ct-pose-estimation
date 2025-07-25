@@ -1,11 +1,10 @@
 # CT SYNTHETIC SWEEP IMAGE GENERATION
-# created 04022025
+# created 04/02/2025
 
 import os
 import numpy as np
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 
 #################### LOAD REFERENCE IMAGE ####################
 
